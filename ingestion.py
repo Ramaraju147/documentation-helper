@@ -10,7 +10,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
-from langchain_tavily import TavilyCrawl, TavilyExtract, TavilyMap
+from langchain_tavily import TavilyExtract, TavilyMap
 
 from logger import (Colors, log_error, log_header, log_info, log_success,
                     log_warning)
@@ -32,18 +32,96 @@ embeddings = OpenAIEmbeddings(
 vectorstore = PineconeVectorStore(
     index_name="angchain-docs-2025", embedding=embeddings
 )
-tavily_crawl = TavilyCrawl()
+
+BATCH_SIZE = 5
+
+tavily_map = TavilyMap()
+tavily_extract = TavilyExtract()
+
+
+def chunk_urls(urls: List[str], batch_size: int = BATCH_SIZE) -> List[List[str]]:
+    return [urls[i : i + batch_size] for i in range(0, len(urls), batch_size)]
 
 
 async def main():
+    log_header("Documentation Ingestion")
     log_info("Starting the ingestion process...")
-    response = tavily_crawl.invoke({
+
+    # Step 1: Map the documentation site to discover URLs
+    log_info("Mapping documentation URLs...")
+    map_response = tavily_map.invoke({
         "url": "https://docs.langchain.com/docs/",
         "max_depth": 2,
         "limit": 100,
+        "categories": ["Documentation"],
     })
-    print(response)
-    log_success(f"Crawled {len(response)} pages successfully.")
+
+    urls = map_response.get("results", [])
+    if not urls:
+        log_error("No URLs found from mapping.")
+        return
+
+    log_success(f"Mapped {len(urls)} URLs.")
+
+    # Step 2: Chunk URLs into batches and extract content concurrently
+    batches = chunk_urls(urls)
+    log_info(f"Processing {len(batches)} batches of up to {BATCH_SIZE} URLs each concurrently...")
+
+    async def extract_batch(batch: List[str], batch_num: int) -> List[Document]:
+        log_info(f"Extracting batch {batch_num}/{len(batches)} ({len(batch)} URLs)...")
+        try:
+            extract_response = await asyncio.to_thread(
+                tavily_extract.invoke, {"urls": batch}
+            )
+
+            results = extract_response.get("results", [])
+            failed = extract_response.get("failed_results", [])
+
+            if failed:
+                log_warning(f"Batch {batch_num}: {len(failed)} URLs failed to extract.")
+
+            docs = []
+            for result in results:
+                raw_content = result.get("raw_content", "")
+                url = result.get("url", "")
+                if raw_content:
+                    docs.append(
+                        Document(page_content=raw_content, metadata={"source": url})
+                    )
+
+            log_success(f"Batch {batch_num}: extracted {len(results)} pages.")
+            return docs
+        except Exception as e:
+            log_error(f"Batch {batch_num} failed: {e}")
+            return []
+
+    batch_results = await asyncio.gather(
+        *(extract_batch(batch, i) for i, batch in enumerate(batches, start=1))
+    )
+
+    all_documents: List[Document] = [
+        doc for docs in batch_results for doc in docs
+    ]
+
+    log_success(f"Total documents extracted: {len(all_documents)}")
+
+    if not all_documents:
+        log_error("No documents extracted. Aborting ingestion.")
+        return
+
+    # Step 3: Split documents into chunks
+    log_info("Splitting documents into chunks...")
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+    )
+    split_docs = text_splitter.split_documents(all_documents)
+    log_success(f"Split into {len(split_docs)} chunks.")
+
+    # Step 4: Ingest into vector store
+    log_info("Ingesting into Pinecone vector store...")
+    vectorstore.add_documents(split_docs)
+    log_success("Ingestion complete!")
 
 
 if __name__ == "__main__":
