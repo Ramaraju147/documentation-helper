@@ -51,7 +51,7 @@ async def main():
     # Step 1: Map the documentation site to discover URLs
     log_info("Mapping documentation URLs...")
     map_response = tavily_map.invoke({
-        "url": "https://docs.langchain.com/docs/",
+        "url": "https://docs.langchain.com/oss/python/langchain/overview",
         "max_depth": 2,
         "limit": 100,
         "categories": ["Documentation"],
