@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import ssl
 from typing import Any, Dict, List
 
@@ -118,9 +119,19 @@ async def main():
     split_docs = text_splitter.split_documents(all_documents)
     log_success(f"Split into {len(split_docs)} chunks.")
 
-    # Step 4: Ingest into vector store
-    log_info("Ingesting into Pinecone vector store...")
-    vectorstore.add_documents(split_docs)
+    # Step 4: Ingest into vector store in batches
+    INGEST_BATCH_SIZE = 50
+    doc_batches = [split_docs[i : i + INGEST_BATCH_SIZE] for i in range(0, len(split_docs), INGEST_BATCH_SIZE)]
+    log_info(f"Ingesting {len(split_docs)} chunks into Pinecone in {len(doc_batches)} batches...")
+
+    for i, batch in enumerate(doc_batches, start=1):
+        log_info(f"Ingesting batch {i}/{len(doc_batches)} ({len(batch)} chunks)...")
+        try:
+            vectorstore.add_documents(batch)
+            log_success(f"Batch {i}/{len(doc_batches)} ingested.")
+        except Exception as e:
+            log_error(f"Batch {i}/{len(doc_batches)} failed: {e}")
+
     log_success("Ingestion complete!")
 
 
